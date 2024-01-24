@@ -1,0 +1,732 @@
+\documentclass{article}
+\usepackage{placeins}
+
+\begin{document}
+<<echo=FALSE, warning=FALSE,message=FALSE>>=
+library(tidyverse)
+library(MASS)
+library(xtable)
+@
+
+\section{Help functions}
+<<echo=FALSE, include=FALSE, cache=TRUE>>=
+
+req_samp<-function(alpha=0.005, beta=0.2, SigmaA=1, abs_MDE=0.1,  kappa=1){ 
+  power = 1-beta
+  zalpha = qnorm(1-(alpha)) 
+  zbeta = qnorm(power) 
+
+  nB<-(zalpha+zbeta)^2/(abs_MDE)^2 * SigmaA * (1+1/kappa) 
+  nA<-kappa*nB 
+  
+  N<-(nA+nB)
+
+  return(N) 
+  }
+
+
+adjust_ssc = function(G, S, alpha, beta, GR=FALSE){
+    alpha_cor= ifelse(GR, alpha, alpha/S)
+    beta_cor=beta/(G+1)
+    return(req_samp(alpha=alpha_cor, beta=beta_cor, SigmaA=1, abs_MDE=0.5, kappa=1))
+}
+
+
+powered_effect=function(alpha, beta, Time){
+  ff = function(eff){
+  (req_samp(alpha=alpha, beta=beta, SigmaA=1, abs_MDE=eff, kappa=1)-Time)^2
+}
+  return(optimize(ff,c(0,3))$mini)
+}
+
+
+# Decision rule error rate simulation 
+
+data_gen = function(N,eff,numb_met, Sigma){
+  x=mvrnorm(n=N, mu=rep(0, numb_met), Sigma=Sigma )
+  y=mvrnorm(n=N, mu=eff, Sigma=Sigma)
+  out=list()
+  out[[1]] = apply(y,2, cumsum)/1:Time - apply(x,2, cumsum)/1:Time
+  out[[2]]=1/1:Time + 1/1:Time
+  
+  return(out)
+}
+
+
+multi_met_sim = function(Sigma, NIM, MDE, GR_true_mean, name, Cor){
+seq_sig_tanking = NULL
+sig_decision_without_tanking_on_success_and_guardrail = NULL
+sig_decision_with_tanking_on_success_and_guardrail = NULL
+sig_decision_without_tanking_or_quality = NULL
+sig_decision_with_tanking_and_quality = NULL
+all_gr_non_inf = NULL
+any_sm_superior = NULL
+any_TandQ_inferior = NULL
+
+for(r in 1:reps){
+  metrics = data_gen(N=Time,
+                     eff=c(rep(MDE, S),rep(GR_true_mean, G)),
+                     numb_met=numb_met,
+                     Sigma=Sigma)
+
+  z_success = metrics[[1]][,1:S]/sqrt(metrics[[2]])
+  z_guardrail_non_inf = (metrics[[1]][,(S+1):numb_met]-NIM)/sqrt(metrics[[2]])
+  z_guardrail_inferiority = (metrics[[1]][,(S+1):numb_met]-0)/sqrt(metrics[[2]])
+  
+  qual_metrics = data_gen(N=Time,
+                     eff=rep(0, TandQ),
+                     numb_met=TandQ,
+                     Sigma=Sigma_TandQ)
+  z_TandQ = qual_metrics[[1]]/sqrt(qual_metrics[[2]])
+  
+
+  sig_success_superiority = z_success[Time,]>qnorm(1-alpha_p_cor2)
+  seq_sig_success_inferiority = apply(z_success<(-bounds_n),2,any)
+  
+  sig_guardrail_non_inferiority = z_guardrail_non_inf[Time,]>qnorm(1-alpha_p)
+  seq_sig_guardrail_inferiority = apply(z_guardrail_inferiority<(-bounds_n),2,any)
+  
+  seq_sig_TandQ_inferiority = apply(z_TandQ<(-bounds_n),2,any)
+  
+  seq_sig_tanking[r] = any(c(seq_sig_success_inferiority,seq_sig_guardrail_inferiority))
+  
+  all_gr_non_inf[r] = all(sig_guardrail_non_inferiority)
+  any_sm_superior[r] = any(sig_success_superiority)
+  any_TandQ_inferior[r] = any(seq_sig_TandQ_inferiority)
+  sig_decision_without_tanking_or_quality[r] = all(sig_guardrail_non_inferiority) & 
+    any(sig_success_superiority)
+  sig_decision_with_tanking_on_success_and_guardrail[r] =  sig_decision_without_tanking_or_quality[r] & !seq_sig_tanking[r]
+  sig_decision_with_tanking_and_quality[r] = sig_decision_with_tanking_on_success_and_guardrail[r] & !any_TandQ_inferior[r]
+}
+
+return(
+  data.frame(seq_sig_tanking=mean(seq_sig_tanking),
+  all_gr_non_inf=mean(all_gr_non_inf),
+  any_sm_superior=mean(any_sm_superior),
+  any_TorQ_inferior=mean(any_TandQ_inferior),
+  sig_decision_without_tanking_or_quality=mean(sig_decision_without_tanking_or_quality),
+  sig_decision_with_tanking_and_quality=mean(sig_decision_with_tanking_and_quality),
+  sig_decision_with_tanking_on_success_and_guardrail=mean(sig_decision_with_tanking_on_success_and_guardrail),
+  name=name,
+  Cor=Cor)
+)
+
+}
+
+
+@
+
+\section{Power corrections image}
+<<echo=FALSE,warning=FALSE, fig.asp=0.62, fig.width=6>>=
+
+tib=tibble(GRs=1:30,Pr=1-pbinom(0:29,1:30,0.8))
+
+ggplot(tib, aes(GRs, Pr))+geom_line()+scale_y_continuous("Power for decision rule")+scale_x_continuous("Number of guardail metrics powered at 80%")
+
+@
+\pagebreak
+
+
+\section{Errors rates under decision rules with corrections}
+
+\subsection{Global Settings}
+<<echo=FALSE>>=
+reps=100000
+Time = 10
+G=5
+S=5
+numb_met=G+S
+TandQ=4
+Sigma_TandQ = diag(TandQ)
+
+alpha_p=0.05
+alpha_n=0.05
+beta=0.2
+@
+
+
+
+\subsection{Without Corrections}
+
+<<sim_multi, echo=FALSE, warning=FALSE, cache=TRUE>>=
+
+alpha_p_cor2 = alpha_p
+bounds_p = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_p_cor2, sides=1)$upper
+
+alpha_n_cor2 = alpha_n
+bounds_n = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_n_cor2, sides=1)$upper
+
+NIM = - powered_effect(alpha=alpha_p, beta=beta, Time=Time*2)
+MDE = powered_effect(alpha=alpha_p_cor2, beta=beta, Time=Time*2)
+
+# SIMs
+# Independent
+set.seed(119944)
+Sigma=matrix(0,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+r1=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Independent"))
+
+#Dependent
+set.seed(119944)
+Sigma=matrix(0.99,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+r2=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Dependent"))
+
+#Block dependent GR, indep success
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_K = matrix(0.99,nrow=G, ncol=G)
+diag(Sigma_K)=1
+Sigma[(S+1):(S+G),(S+1):(S+G)]=Sigma_K
+r3=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMindep_GRdep"))
+
+#Block dependent success, indep GR
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_S = matrix(0.99,nrow=S, ncol=S)
+diag(Sigma_S)=1
+Sigma[1:S,1:S]=Sigma_S
+r4=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMdep_GRindep"))
+
+rw = rbind(r1,r2,r3,r4)
+rw$correction="None"
+@
+\pagebreak
+
+
+\subsection{With only alpha corrections}
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+alpha_p_cor2 = alpha_p/S
+bounds_p = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_p_cor2, sides=1)$upper
+
+alpha_n_cor2 = alpha_n/(S+G+TandQ)
+bounds_n = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_n_cor2, sides=1)$upper
+
+NIM = - powered_effect(alpha=alpha_p, beta=beta, Time=Time*2)
+MDE = powered_effect(alpha=alpha_p_cor2, beta=beta, Time=Time*2)
+
+# SIMs
+# Independent
+set.seed(119944)
+Sigma=matrix(0,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+r1=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Independent"))
+
+#Dependent
+set.seed(119944)
+Sigma=matrix(0.99,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+r2=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Dependent"))
+
+#Block dependent GR, indep success
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_K = matrix(0.99,nrow=G, ncol=G)
+diag(Sigma_K)=1
+Sigma[(S+1):(S+G),(S+1):(S+G)]=Sigma_K
+r3=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMindep_GRdep"))
+
+#Block dependent success, indep GR
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_S = matrix(0.99,nrow=S, ncol=S)
+diag(Sigma_S)=1
+Sigma[1:S,1:S]=Sigma_S
+r4=rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMdep_GRindep"))
+
+ronlya = rbind(r1,r2,r3,r4)
+ronlya$correction="Only Alpha"
+@
+
+\pagebreak
+\subsection{With Corrections}
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+alpha_p_cor2 = alpha_p/S
+bounds_p = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_p_cor2, sides=1)$upper
+
+alpha_n_cor2 = alpha_n/(S+G+TandQ)
+bounds_n = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_n_cor2, sides=1)$upper
+
+beta_cor = (beta-alpha_n )/((1-alpha_n )*(G+1))
+
+NIM = - powered_effect(alpha=alpha_p, beta=beta_cor, Time=Time*2)
+MDE = powered_effect(alpha=alpha_p_cor2, beta=beta_cor, Time=Time*2)
+
+# SIMs
+#Independent
+set.seed(119944)
+Sigma=matrix(0,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+r1 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Independent"))
+
+#Dependent
+set.seed(119944)
+Sigma=matrix(0.99,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+r2 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Dependent"))
+
+#Block dependent GR, indep success
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_K = matrix(0.99,nrow=G, ncol=G)
+diag(Sigma_K)=1
+Sigma[(S+1):(S+G),(S+1):(S+G)]=Sigma_K
+r3 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMindep_GRdep"))
+
+#Block dependent success, indep GR
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_S = matrix(0.99,nrow=S, ncol=S)
+diag(Sigma_S)=1
+Sigma[1:S,1:S]=Sigma_S
+r4 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMdep_GRindep"))
+
+
+rall = rbind(r1,r2,r3,r4)
+rall$correction="Prop. 4.1"
+
+res=rbind(rw,ronlya,rall)
+saveRDS(res, "sim1")
+@
+
+
+
+<<include=FALSE, echo=FALSE>>=
+tib=readRDS("sim1")
+
+tib = as_tibble(tib)
+tib1 = tib %>% dplyr::select(!c(sig_decision_without_tanking_or_quality, sig_decision_with_tanking_on_success_and_guardrail))  %>% arrange(name, correction, Cor) %>% relocate(name, Cor, correction,any_sm_superior, all_gr_non_inf, seq_sig_tanking, any_TorQ_inferior, sig_decision_with_tanking_and_quality)
+
+tib1$Cor[tib1$Cor=="Block_SMindep_GRdep"] = "3Block 1"
+tib1$Cor[tib1$Cor=="Block_SMdep_GRindep"] = "4Block 2"
+tib1$Cor[tib1$Cor=="Independent"] = "1Independent"
+tib1$Cor[tib1$Cor=="Dependent"] = "2Dependent"
+
+names(tib1) = c("Scenario","Covariance", "Correction", "$R_\\mathcal{S}$", "$R_\\mathcal{G}$", "$R_\\mathcal{T,S}\\bigcup R_\\mathcal{T,G}$", "$R_\\mathcal{T}\\bigcup R_\\mathcal{Q}$","D. Rule 2")
+
+tib_h0 = tib1 %>% filter(Scenario=="NULL") %>% arrange(Covariance)
+print(xtable(tib_h0[,2:8], digits=3 ),include.rownames = FALSE,sanitize.text.function=function(x){x})
+
+tib_sq = tib1 %>% filter(Scenario=="statusQuo") %>% arrange(Covariance)
+print(xtable(tib_sq[,2:8], digits=3 ),include.rownames = FALSE,sanitize.text.function=function(x){x})
+
+tib_h1 = tib1 %>% filter(Scenario=="alternative") %>% arrange(Covariance)
+print(xtable(tib_h1[,2:8], digits=3 ),include.rownames = FALSE,sanitize.text.function=function(x){x})
+@
+
+
+
+\subsection{Simulation showing confirming the remark regarding beta corrections}
+<<echo=FALSE>>=
+S = c(2,5,10,20,30)
+betas = c(0.2,0.3,0.4,0.5)
+alpha = 0.1
+alpha_neg = betas
+res = matrix(NA,length(betas), length(S))
+for(s in 1:length(S)){
+  res[,s] = pnorm(qnorm(alpha_neg/S[s]),qnorm(1-alpha/S[s])-qnorm(betas))  * (S[s]-1)
+}
+colnames(res) = paste0(S)
+res=cbind(beta=betas,res)
+
+print(xtable(res, digits = 6), include.rownames = FALSE)
+@
+
+
+\section{Appendix}
+\subsection{Simulation -- Effect of seq tanking test on the success metric fixed horizon test}
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+sim_seq_tank_success = function(metric, hypothesis, design, seed){
+seq_sig_tanking = NULL
+sig_decision_without_tanking=NULL
+sig_in_both_directions=NULL
+sig_decision_with_tanking=NULL
+set.seed(seed)
+
+for(r in 1:reps){
+  y=rnorm(Time,0+eff,1)
+  x=rnorm(Time,0,1)
+  var=1/1:Time + 1/1:Time
+  mean = cumsum(y)/1:Time - cumsum(x)/1:Time
+  z=mean/sqrt(var)
+  seq_sig_tanking[r] = any(z<(-bounds))
+  sig_in_both_directions[r] = (z[Time]>1.6449) & any(z<(-bounds))
+  sig_decision_without_tanking[r] = (z[Time]>1.6449)
+  sig_decision_with_tanking[r] = (z[Time]>1.6449) & !any(z[1:(Time-1)]<(-bounds[1:(Time-1)]))
+}
+
+t1 = tibble(Analyses=Time,
+              seq_sig_tanking=mean(seq_sig_tanking),
+               sig_in_both_directions=mean(sig_in_both_directions),
+               sig_superiority=mean(sig_decision_without_tanking),
+               sig_decision_with_tanking = mean(sig_decision_with_tanking)
+               )
+t1["metric"] = metric
+t1["Hypothesis"] = hypothesis
+t1["Design"] = design
+return(t1)
+}
+
+
+sim_seq_tank_guardrail = function(metric, hypothesis, design, seed, hyp){
+seq_sig_tanking = NULL
+sig_decision_without_tanking=NULL
+sig_in_both_directions=NULL
+sig_decision_with_tanking=NULL
+set.seed(seed)
+
+for(r in 1:reps){
+  y=rnorm(Time,hyp,1)
+  x=rnorm(Time,0,1)
+  var=1/1:Time + 1/1:Time
+  mean = cumsum(y)/1:Time - cumsum(x)/1:Time
+  z_inferiority=mean/sqrt(var)
+  z_non_inferiority=(mean-NIM)/sqrt(var)
+  seq_sig_tanking[r] = any(z_inferiority<(-bounds))
+  sig_in_both_directions[r] = (z_non_inferiority[Time]>1.6449) & any(z_inferiority<(-bounds))
+  sig_decision_without_tanking[r] = (z_non_inferiority[Time]>1.6449)
+  sig_decision_with_tanking[r] = (z_non_inferiority[Time]>1.6449) & !any(z_inferiority[1:(Time-1)]<(-bounds[1:(Time-1)]))
+}
+
+t=tibble(Analyses=Time,
+          Hypothesis="Null",
+            seq_sig_tanking=mean(seq_sig_tanking),
+             sig_in_both_directions=mean(sig_in_both_directions),
+             sig_superiority=mean(sig_decision_without_tanking),
+             sig_decision_with_tanking = mean(sig_decision_with_tanking)
+             )
+
+t["metric"] = metric
+t["Hypothesis"] = hypothesis
+t["Design"] = design
+
+return(t)
+}
+@
+\subsubsection{100 intermittent analyses for tanking}
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+S=5
+G=5
+numb_met=G+S
+eff = 0
+alpha=0.05
+Time=100
+@
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.2
+bounds = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha, sides=1)$upper
+
+t1 = sim_seq_tank_success(metric = "success", hypothesis = "H0", design = "alpha005", seed=119944)
+@
+\pagebreak
+
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.2
+eff = powered_effect(alpha, beta, Time*2)
+
+t2 = sim_seq_tank_success(metric = "success", hypothesis = "H1", design = "alpha005", seed=119944)
+@
+\pagebreak
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.2
+NIM=-powered_effect(alpha, beta, Time*2)
+
+t3=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H0", design="beta02_alpha005", seed=119944, hyp=NIM)
+@
+
+
+
+\pagebreak
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.2
+NIM=-powered_effect(alpha, beta, Time*2)
+
+t4=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H1", design="beta02_alpha005", seed=119944, hyp=0)
+@
+
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.05
+NIM=-powered_effect(alpha, beta, Time*2)
+
+t5=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H0", design="beta005_alpha005", seed=119944, hyp=NIM)
+@
+
+
+\pagebreak
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.05
+NIM=-powered_effect(alpha, beta, Time*2)
+t6=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H1", design="beta005_alpha005", seed=119944, hyp=0)
+
+print(xtable((bind_rows(t1,t2,t3,t4,t5,t6)[,-1])[,c(5,6,7,4,1,3,2)], digits = 5),include.rownames = FALSE)
+@
+
+
+\subsubsection{100 intermittent analyses for tanking}
+
+<<echo=FALSE,warning=FALSE>>=
+eff = 0
+alpha=0.05
+Time=10
+@
+
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.05
+
+bounds = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha, sides=1)$upper
+t1= sim_seq_tank_success(metric = "success", hypothesis = "H0", design = "alpha005", seed=119944)
+@
+\pagebreak
+
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.2
+
+eff = powered_effect(alpha, beta, Time*2)
+t2 = sim_seq_tank_success(metric = "success", hypothesis = "H1", design = "alpha005", seed=119944)
+@
+\pagebreak
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.2
+NIM=-powered_effect(alpha, beta, Time*2)
+
+t3=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H0", design="beta02_alpha005", seed=119944, hyp=NIM)
+@
+
+
+
+\pagebreak
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.2
+NIM=-powered_effect(alpha, beta, Time*2)
+
+t4=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H1", design="beta02_alpha005", seed=119944, hyp=0)
+@
+
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.05
+NIM=-powered_effect(alpha, beta, Time*2)
+
+t5=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H0", design="beta005_alpha005", seed=119944, hyp=NIM)
+@
+
+
+
+\pagebreak
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+beta=0.05
+NIM=-powered_effect(alpha, beta, Time*2)
+
+t6=sim_seq_tank_guardrail(metric="guardrail", hypothesis="H1", design="beta005_alpha005", seed=119944, hyp=0)
+
+print(xtable((bind_rows(t1,t2,t3,t4,t5,t6)[,-1])[,c(5,6,7,4,1,3,2)], digits = 5),include.rownames = FALSE)
+@
+
+
+\section{Trying out Nyholt}
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+meff <- function(R) {
+  # get eigenvalues of 'R' matrix
+  evs <- base::eigen(R)$values
+  # effective number of tests (based on Nyholt, 2004)
+  k <- length(evs)
+  m <- 1 + (k - 1) * (1 - var(evs) / k)
+  # always round down the estimated value
+  #m <- ceiling(m)
+  return(m)
+}
+
+Time = 10
+G=5
+S=5
+numb_met=G+S
+TandQ=4
+Sigma_TandQ = diag(TandQ)
+
+alpha_p=0.05
+alpha_n=0.05
+beta=0.2
+@
+
+<<echo=FALSE,warning=FALSE, cache=TRUE>>=
+
+#Independent
+set.seed(119944)
+Sigma=matrix(0,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+S_split = meff(Sigma[1:S,1:S])
+G_split = meff(Sigma[(S+1):numb_met,(S+1):numb_met])
+alpha_p_cor2 = alpha_p/S_split
+bounds_p = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_p_cor2, sides=1)$upper
+
+alpha_n_cor2 = alpha_n/(S_split+G_split+TandQ)
+bounds_n = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_n_cor2, sides=1)$upper
+
+#Note: we are using remark 1 for the beta correction
+
+phi_star =(TandQ/(G_split+S_split+TandQ)) * alpha_n 
+beta_cor = (beta-phi_star)/((1-phi_star)*(G_split+1))
+
+NIM = - powered_effect(alpha=alpha_p, beta=beta_cor, Time=Time*2)
+MDE = powered_effect(alpha=alpha_p_cor2, beta=beta_cor, Time=Time*2)
+
+r1 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Independent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Independent"))
+
+#Dependent
+set.seed(119944)
+Sigma=matrix(0.99,nrow=numb_met, ncol=numb_met)
+diag(Sigma) = 1
+S_split = meff(Sigma[1:S,1:S])
+G_split = meff(Sigma[(S+1):numb_met,(S+1):numb_met])
+alpha_p_cor2 = alpha_p/S_split
+bounds_p = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_p_cor2, sides=1)$upper
+
+alpha_n_cor2 = alpha_n/(S_split+G_split+TandQ)
+bounds_n = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_n_cor2, sides=1)$upper
+
+#Note: we are using remark 1 for the beta correction
+
+phi_star =(TandQ/(G_split+S_split+TandQ)) * alpha_n 
+beta_cor = (beta-phi_star)/((1-phi_star)*(G_split+1))
+
+NIM = - powered_effect(alpha=alpha_p, beta=beta_cor, Time=Time*2)
+MDE = powered_effect(alpha=alpha_p_cor2, beta=beta_cor, Time=Time*2)
+r2 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Dependent"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Dependent"))
+
+#Block dependent GR, indep success
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_K = matrix(0.99,nrow=G, ncol=G)
+diag(Sigma_K)=1
+Sigma[(S+1):(S+G),(S+1):(S+G)]=Sigma_K
+S_split = meff(Sigma[1:S,1:S])
+G_split = meff(Sigma[(S+1):numb_met,(S+1):numb_met])
+alpha_p_cor2 = alpha_p/S_split
+bounds_p = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_p_cor2, sides=1)$upper
+
+alpha_n_cor2 = alpha_n/(S_split+G_split+TandQ)
+bounds_n = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_n_cor2, sides=1)$upper
+
+#Note: we are using remark 1 for the beta correction
+phi_star =(TandQ/(G_split+S_split+TandQ)) * alpha_n 
+beta_cor = (beta-phi_star)/((1-phi_star)*(G_split+1))
+
+NIM = - powered_effect(alpha=alpha_p, beta=beta_cor, Time=Time*2)
+MDE = powered_effect(alpha=alpha_p_cor2, beta=beta_cor, Time=Time*2)
+
+r3 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMindep_GRdep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMindep_GRdep"))
+
+#Block dependent success, indep GR
+set.seed(119944)
+Sigma=diag(nrow=numb_met)
+Sigma_S = matrix(0.99,nrow=S, ncol=S)
+diag(Sigma_S) = 1
+Sigma[1:S,1:S] = Sigma_S
+S_split = meff(Sigma[1:S,1:S])
+G_split = meff(Sigma[(S+1):numb_met,(S+1):numb_met])
+alpha_p_cor2 = alpha_p/S_split
+bounds_p = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_p_cor2, sides=1)$upper
+
+alpha_n_cor2 = alpha_n/(S_split+G_split+TandQ)
+bounds_n = ldbounds::ldBounds((1:Time)/Time, iuse=3, phi=1, alpha=alpha_n_cor2, sides=1)$upper
+
+#Note: we are using remark 1 for the beta correction
+phi_star =(TandQ/(G_split+S_split+TandQ)) * alpha_n 
+beta_cor = (beta-phi_star)/((1-phi_star)*(G_split+1))
+
+NIM = - powered_effect(alpha=alpha_p, beta=beta_cor, Time=Time*2)
+MDE = powered_effect(alpha=alpha_p_cor2, beta=beta_cor, Time=Time*2)
+r4 = rbind(
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = NIM, name="NULL", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=0, GR_true_mean = 0, name="statusQuo", Cor="Block_SMdep_GRindep"),
+multi_met_sim(Sigma,NIM, MDE=MDE, GR_true_mean = 0, name="alternative", Cor="Block_SMdep_GRindep"))
+
+rall_nyholt = rbind(r1,r2,r3,r4)
+rall_nyholt$correction="Prop. 4.1+Nyholt"
+rall_nyholt
+
+res=rbind(rw,ronlya,rall, rall_nyholt)
+saveRDS(res, "sim2")
+@
+
+<<include=FALSE, echo=FALSE>>=
+
+tib=readRDS("sim2")
+
+tib = as_tibble(tib)
+names(tib)
+tib1 = tib %>% dplyr::select(!c(sig_decision_without_tanking_or_quality, sig_decision_with_tanking_on_success_and_guardrail))%>% arrange(name, correction, Cor) %>% relocate(name, Cor, correction,any_sm_superior, all_gr_non_inf, seq_sig_tanking, any_TorQ_inferior, sig_decision_with_tanking_and_quality)
+
+tib1$Cor[tib1$Cor=="Block_SMindep_GRdep"] = "3Block 1"
+tib1$Cor[tib1$Cor=="Block_SMdep_GRindep"] = "4Block 2"
+tib1$Cor[tib1$Cor=="Independent"] = "1Independent"
+tib1$Cor[tib1$Cor=="Dependent"] = "2Dependent"
+
+names(tib1) = c("Scenario","Covariance", "Correction", "$R_\\mathcal{S}$", "$R_\\mathcal{G}$", "$R_\\mathcal{T,S}\\bigcup R_\\mathcal{T,G}$", "$R_\\mathcal{T}\\bigcup R_\\mathcal{Q}$","D. Rule 2")
+
+tib_h0 = tib1 %>% filter(Scenario=="NULL") %>% arrange(Covariance)
+print(xtable(tib_h0[,2:8], digits=3 ),include.rownames = FALSE,sanitize.text.function=function(x){x})
+
+tib_sq = tib1 %>% filter(Scenario=="statusQuo") %>% arrange(Covariance)
+print(xtable(tib_sq[,2:8], digits=3 ),include.rownames = FALSE,sanitize.text.function=function(x){x})
+
+tib_h1 = tib1 %>% filter(Scenario=="alternative") %>% arrange(Covariance)
+print(xtable(tib_h1[,2:8], digits=3 ),include.rownames = FALSE,sanitize.text.function=function(x){x})
+
+
+@
+
+
+\end{document}
