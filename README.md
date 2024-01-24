@@ -1,1 +1,1 @@
-The rnw-file contains all simulation code. The simulation in the main part of the paper is pre-run and save in the sim1 file. If you just want to recreate the tables, you can read the sim1 file in the cell that creates the table using xtables.  
+The rnw-file contains all simulation code. The simulation in the main part of the paper is pre-run and saved in the sim1 file. If you just want to recreate the tables, you can read the sim1 file in the cell that creates the table using xtables.  
